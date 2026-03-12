@@ -9,12 +9,14 @@ use crate::hooks;
 
 // ── Gitignore ────────────────────────────────────────────────────────────────
 
-/// Adds entries to the main repo's .gitignore
-fn update_gitignore(work_tree: &Path, files: &[String]) -> Result<()> {
-    let gitignore_path = work_tree.join(".gitignore");
+/// Adds entries to .git/info/exclude (not tracked — no trace on public repo)
+fn update_exclude(git_dir: &Path, files: &[String]) -> Result<()> {
+    let info_dir = git_dir.join("info");
+    std::fs::create_dir_all(&info_dir)?;
+    let exclude_path = info_dir.join("exclude");
 
-    let existing = if gitignore_path.exists() {
-        std::fs::read_to_string(&gitignore_path)?
+    let existing = if exclude_path.exists() {
+        std::fs::read_to_string(&exclude_path)?
     } else {
         String::new()
     };
@@ -40,19 +42,19 @@ fn update_gitignore(work_tree: &Path, files: &[String]) -> Result<()> {
         content.push('\n');
     }
 
-    std::fs::write(&gitignore_path, content)?;
-    println!("{} .gitignore updated ({} entries added)", "->".cyan(), to_add.len());
+    std::fs::write(&exclude_path, content)?;
+    println!("{} .git/info/exclude updated ({} entries added)", "->".cyan(), to_add.len());
     Ok(())
 }
 
-/// Removes git-aside entries from .gitignore
-fn remove_from_gitignore(work_tree: &Path, files: &[String]) -> Result<()> {
-    let gitignore_path = work_tree.join(".gitignore");
-    if !gitignore_path.exists() {
+/// Removes git-aside entries from .git/info/exclude
+fn remove_from_exclude(git_dir: &Path, files: &[String]) -> Result<()> {
+    let exclude_path = git_dir.join("info").join("exclude");
+    if !exclude_path.exists() {
         return Ok(());
     }
 
-    let content = std::fs::read_to_string(&gitignore_path)?;
+    let content = std::fs::read_to_string(&exclude_path)?;
     let filtered: Vec<&str> = content
         .lines()
         .filter(|line| {
@@ -62,7 +64,7 @@ fn remove_from_gitignore(work_tree: &Path, files: &[String]) -> Result<()> {
         })
         .collect();
 
-    std::fs::write(&gitignore_path, filtered.join("\n") + "\n")?;
+    std::fs::write(&exclude_path, filtered.join("\n") + "\n")?;
     Ok(())
 }
 
@@ -117,8 +119,8 @@ pub fn init(remote: &str, files: &[String]) -> Result<()> {
             .output()?;
     }
 
-    // 5. Update main repo .gitignore
-    update_gitignore(&work_tree, files)?;
+    // 5. Update .git/info/exclude (no trace on public repo)
+    update_exclude(&git_dir, files)?;
 
     // 6. Hooks
     hooks::install(&git_dir)?;
@@ -295,7 +297,8 @@ pub fn add_files(files: &[String]) -> Result<()> {
     }
     config::save(&cfg, &project_id)?;
 
-    update_gitignore(&work_tree, files)?;
+    let git_dir = get_git_dir(&work_tree)?;
+    update_exclude(&git_dir, files)?;
 
     let file_refs: Vec<&str> = files.iter().map(|f| f.as_str()).collect();
     let mut add_args = vec!["add", "-f"];
@@ -320,8 +323,8 @@ pub fn deinit() -> Result<()> {
     hooks::uninstall(&git_dir)?;
     println!("{} Hooks removed", "->".cyan());
 
-    remove_from_gitignore(&work_tree, &cfg.tracked)?;
-    println!("{} .gitignore cleaned up", "->".cyan());
+    remove_from_exclude(&git_dir, &cfg.tracked)?;
+    println!("{} .git/info/exclude cleaned up", "->".cyan());
 
     config::remove(&project_id)?;
     println!("{} Local config removed", "->".cyan());

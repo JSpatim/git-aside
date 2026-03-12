@@ -12,9 +12,9 @@ fi
 "#;
 
 const PRE_PUSH_HOOK: &str = r#"#!/bin/sh
-# git-aside: push aside repo before push
+# git-aside: sync aside repo before push
 if command -v git-aside >/dev/null 2>&1; then
-    git-aside push 2>/dev/null || true
+    git-aside sync --message "chore: auto-sync before push" 2>/dev/null || true
 fi
 "#;
 
