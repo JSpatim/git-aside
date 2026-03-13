@@ -1,3 +1,7 @@
+<p align="center">
+  <img src="assets/git-valet.png" alt="git-valet" width="640">
+</p>
+
 # git-valet
 
 > Transparently version private files (.env, secrets, notes, AI prompts) in a **separate private repo**, synced via git hooks. Zero workflow change.
