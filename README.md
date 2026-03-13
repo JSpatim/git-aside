@@ -62,7 +62,7 @@ cargo install --path .
 
 The `git-valet` binary is installed in `~/.cargo/bin/` (already in your PATH if Rust is installed).
 
-### From crates.io (coming soon)
+### From crates.io
 
 ```bash
 cargo install git-valet
