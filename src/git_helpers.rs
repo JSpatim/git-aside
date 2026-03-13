@@ -2,7 +2,7 @@ use anyhow::{Context, Result};
 use std::path::{Path, PathBuf};
 use std::process::{Command, Output};
 
-use crate::config::AsideConfig;
+use crate::config::ValetConfig;
 
 /// Runs a git command in the main repo
 pub fn git(args: &[&str], work_tree: &Path) -> Result<Output> {
@@ -14,8 +14,8 @@ pub fn git(args: &[&str], work_tree: &Path) -> Result<Output> {
     Ok(out)
 }
 
-/// Runs a git command against the aside bare repo + work-tree
-pub fn sgit(args: &[&str], config: &AsideConfig) -> Result<Output> {
+/// Runs a git command against the valet bare repo + work-tree
+pub fn sgit(args: &[&str], config: &ValetConfig) -> Result<Output> {
     let out = Command::new("git")
         .arg("--git-dir")
         .arg(&config.bare_path)
@@ -23,7 +23,7 @@ pub fn sgit(args: &[&str], config: &AsideConfig) -> Result<Output> {
         .arg(&config.work_tree)
         .args(args)
         .output()
-        .context("Failed to execute aside git")?;
+        .context("Failed to execute valet git")?;
     Ok(out)
 }
 
@@ -58,8 +58,8 @@ pub fn get_work_tree() -> Result<PathBuf> {
     Ok(PathBuf::from(s))
 }
 
-/// Loads the aside config from the current repo
-pub fn load_config() -> Result<AsideConfig> {
+/// Loads the valet config from the current repo
+pub fn load_config() -> Result<ValetConfig> {
     let work_tree = get_work_tree()?;
     let origin = get_origin(&work_tree)?;
     crate::config::load(&origin)

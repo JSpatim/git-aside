@@ -12,7 +12,7 @@ fn hook_install_creates_files() {
 
     // Installe les hooks (via le même mécanisme que le code)
     let hook_names = ["pre-commit", "pre-push", "post-merge", "post-checkout"];
-    let marker = "# git-aside:";
+    let marker = "# git-valet:";
 
     for name in &hook_names {
         let hook_path = hooks_dir.join(name);
@@ -33,7 +33,7 @@ fn hook_append_does_not_duplicate_shebang() {
     fs::write(&hook_path, existing).unwrap();
 
     // Simule l'append comme le fait hooks.rs (après le fix)
-    let new_hook = "#!/bin/sh\n# git-aside: sync\ngit-aside sync\nfi\n";
+    let new_hook = "#!/bin/sh\n# git-valet: sync\ngit-valet sync\nfi\n";
     let stripped = new_hook.trim_start_matches("#!/bin/sh\n");
     let combined = format!("{}\n{}", existing.trim_end(), stripped);
     fs::write(&hook_path, &combined).unwrap();
@@ -42,26 +42,26 @@ fn hook_append_does_not_duplicate_shebang() {
 
     // Un seul shebang
     assert_eq!(result.matches("#!/bin/sh").count(), 1);
-    // Le contenu git-aside est bien là
-    assert!(result.contains("# git-aside:"));
+    // Le contenu git-valet est bien là
+    assert!(result.contains("# git-valet:"));
     // Le hook existant est préservé
     assert!(result.contains("existing hook"));
 }
 
 #[test]
-fn hook_uninstall_removes_aside_block() {
-    let content = "#!/bin/sh\necho 'my hook'\n# git-aside: sync\nif command -v git-aside; then\n    git-aside sync\nfi\necho 'after'\n";
+fn hook_uninstall_removes_valet_block() {
+    let content = "#!/bin/sh\necho 'my hook'\n# git-valet: sync\nif command -v git-valet; then\n    git-valet sync\nfi\necho 'after'\n";
 
     let mut filtered = Vec::new();
-    let mut in_aside_block = false;
+    let mut in_valet_block = false;
     for line in content.lines() {
-        if line.contains("# git-aside:") {
-            in_aside_block = true;
+        if line.contains("# git-valet:") {
+            in_valet_block = true;
             continue;
         }
-        if in_aside_block {
+        if in_valet_block {
             if line.trim() == "fi" {
-                in_aside_block = false;
+                in_valet_block = false;
             }
             continue;
         }
@@ -71,23 +71,23 @@ fn hook_uninstall_removes_aside_block() {
     let result = filtered.join("\n");
     assert!(result.contains("my hook"));
     assert!(result.contains("after"));
-    assert!(!result.contains("git-aside"));
+    assert!(!result.contains("git-valet"));
 }
 
 #[test]
 fn hook_uninstall_empty_after_removal() {
-    let content = "#!/bin/sh\n# git-aside: sync\nif command -v git-aside; then\n    git-aside sync\nfi\n";
+    let content = "#!/bin/sh\n# git-valet: sync\nif command -v git-valet; then\n    git-valet sync\nfi\n";
 
     let mut filtered = Vec::new();
-    let mut in_aside_block = false;
+    let mut in_valet_block = false;
     for line in content.lines() {
-        if line.contains("# git-aside:") {
-            in_aside_block = true;
+        if line.contains("# git-valet:") {
+            in_valet_block = true;
             continue;
         }
-        if in_aside_block {
+        if in_valet_block {
             if line.trim() == "fi" {
-                in_aside_block = false;
+                in_valet_block = false;
             }
             continue;
         }
@@ -97,6 +97,6 @@ fn hook_uninstall_empty_after_removal() {
     let result = filtered.join("\n");
     let trimmed = result.trim();
 
-    // Après suppression du bloc git-aside, il ne reste que le shebang
+    // Après suppression du bloc git-valet, il ne reste que le shebang
     assert!(trimmed == "#!/bin/sh");
 }

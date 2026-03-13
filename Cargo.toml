@@ -1,15 +1,17 @@
 [package]
-name = "git-aside"
+name = "git-valet"
 version = "0.1.0"
 edition = "2021"
-description = "Version specific files in a separate private repo transparently alongside git repos"
-license = "MIT"
-repository = "https://github.com/JSpatim/git-aside"
-keywords = ["git", "private", "secrets", "worktree"]
+description = "Transparently version private files (.env, secrets, notes, AI prompts) in a separate repo, synced via git hooks. Zero workflow change."
+keywords = ["git", "private-files", "secrets", "cli", "hooks"]
 categories = ["command-line-utilities", "development-tools"]
+repository = "https://github.com/JSpatim/git-valet"
+homepage = "https://github.com/JSpatim/git-valet"
+license = "MIT"
+readme = "README.md"
 
 [[bin]]
-name = "git-aside"
+name = "git-valet"
 path = "src/main.rs"
 
 [dependencies]

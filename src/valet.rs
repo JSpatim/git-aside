@@ -3,7 +3,7 @@ use colored::Colorize;
 use std::path::{Path, PathBuf};
 use std::process::Command;
 
-use crate::config::{self, AsideConfig};
+use crate::config::{self, ValetConfig};
 use crate::git_helpers::{get_git_dir, get_origin, get_work_tree, load_config, sgit};
 use crate::hooks;
 
@@ -36,7 +36,7 @@ fn update_exclude(git_dir: &Path, files: &[String]) -> Result<()> {
     if !content.ends_with('\n') && !content.is_empty() {
         content.push('\n');
     }
-    content.push_str("\n# git-aside: files versioned in the aside repo\n");
+    content.push_str("\n# git-valet: files versioned in the valet repo\n");
     for f in &to_add {
         content.push_str(f);
         content.push('\n');
@@ -47,7 +47,7 @@ fn update_exclude(git_dir: &Path, files: &[String]) -> Result<()> {
     Ok(())
 }
 
-/// Removes git-aside entries from .git/info/exclude
+/// Removes git-valet entries from .git/info/exclude
 fn remove_from_exclude(git_dir: &Path, files: &[String]) -> Result<()> {
     let exclude_path = git_dir.join("info").join("exclude");
     if !exclude_path.exists() {
@@ -60,7 +60,7 @@ fn remove_from_exclude(git_dir: &Path, files: &[String]) -> Result<()> {
         .filter(|line| {
             let trimmed = line.trim();
             !files.iter().any(|f| f == trimmed)
-                && trimmed != "# git-aside: files versioned in the aside repo"
+                && trimmed != "# git-valet: files versioned in the valet repo"
         })
         .collect();
 
@@ -70,18 +70,18 @@ fn remove_from_exclude(git_dir: &Path, files: &[String]) -> Result<()> {
 
 // ── Public commands ──────────────────────────────────────────────────────────
 
-/// `git aside init <remote> <files...>`
+/// `git valet init <remote> <files...>`
 pub fn init(remote: &str, files: &[String]) -> Result<()> {
     let work_tree = get_work_tree()?;
     let origin = get_origin(&work_tree)?;
     let git_dir = get_git_dir(&work_tree)?;
 
     let project_id = config::project_id(&origin);
-    let bare_path = config::asides_dir()?.join(&project_id).join("repo.git");
+    let bare_path = config::valets_dir()?.join(&project_id).join("repo.git");
 
-    println!("{}", "Initializing aside repo...".bold());
-    println!("  Project   : {}", origin.dimmed());
-    println!("  Aside     : {}", remote.cyan());
+    println!("{}", "Initializing valet repo...".bold());
+    println!("  Project : {}", origin.dimmed());
+    println!("  Valet   : {}", remote.cyan());
     println!("  Bare repo : {}", bare_path.display().to_string().dimmed());
 
     // 1. Init bare repo
@@ -94,7 +94,7 @@ pub fn init(remote: &str, files: &[String]) -> Result<()> {
     }
 
     // 2. Config
-    let cfg = AsideConfig {
+    let cfg = ValetConfig {
         work_tree: work_tree.to_str().unwrap().to_string(),
         remote: remote.to_string(),
         bare_path: bare_path.to_str().unwrap().to_string(),
@@ -139,7 +139,7 @@ pub fn init(remote: &str, files: &[String]) -> Result<()> {
             .collect();
         sgit(&add_args, &cfg)?;
 
-        let commit_out = sgit(&["commit", "-m", "feat: init aside repo"], &cfg)?;
+        let commit_out = sgit(&["commit", "-m", "feat: init valet repo"], &cfg)?;
         if commit_out.status.success() {
             println!("{} Initial commit done", "->".cyan());
 
@@ -150,7 +150,7 @@ pub fn init(remote: &str, files: &[String]) -> Result<()> {
             } else {
                 let err = String::from_utf8_lossy(&push_out.stderr);
                 println!("{} Initial push failed (remote unreachable?): {}", "!".yellow(), err.trim());
-                println!("  You can push manually with: {}", "git aside push".cyan());
+                println!("  You can push manually with: {}", "git valet push".cyan());
             }
         }
     } else {
@@ -174,8 +174,8 @@ pub fn init(remote: &str, files: &[String]) -> Result<()> {
         }
     }
 
-    println!("\n{}", "Done! Aside repo initialized.".green().bold());
-    println!("The following files are now managed by git-aside:");
+    println!("\n{}", "Done! Valet repo initialized.".green().bold());
+    println!("The following files are now managed by git-valet:");
     for f in files {
         println!("  {} {}", "-".dimmed(), f.cyan());
     }
@@ -184,11 +184,11 @@ pub fn init(remote: &str, files: &[String]) -> Result<()> {
     Ok(())
 }
 
-/// `git aside status`
+/// `git valet status`
 pub fn status() -> Result<()> {
     let cfg = load_config()?;
 
-    println!("{}", "Aside repo status".bold());
+    println!("{}", "Valet repo status".bold());
     println!("  Remote  : {}", cfg.remote.cyan());
     println!("  Tracked :");
     for f in &cfg.tracked {
@@ -200,14 +200,14 @@ pub fn status() -> Result<()> {
 
     let head_check = sgit(&["rev-parse", "HEAD"], &cfg)?;
     if !head_check.status.success() {
-        println!("{}", "Aside repo has no commits yet — run `git aside sync` to create the initial commit.".yellow());
+        println!("{}", "Valet repo has no commits yet — run `git valet sync` to create the initial commit.".yellow());
         return Ok(());
     }
 
     let out = sgit(&["status", "--short"], &cfg)?;
     let stdout = String::from_utf8_lossy(&out.stdout);
     if stdout.trim().is_empty() {
-        println!("{}", "Nothing to commit — aside repo is clean.".green());
+        println!("{}", "Nothing to commit — valet repo is clean.".green());
     } else {
         println!("{}", stdout);
     }
@@ -215,7 +215,7 @@ pub fn status() -> Result<()> {
     Ok(())
 }
 
-/// `git aside sync` — add + commit + push
+/// `git valet sync` — add + commit + push
 pub fn sync(message: &str) -> Result<()> {
     let cfg = load_config()?;
 
@@ -247,9 +247,9 @@ pub fn sync(message: &str) -> Result<()> {
         let commit_out = sgit(&["commit", "-m", message], &cfg)?;
         if !commit_out.status.success() {
             let err = String::from_utf8_lossy(&commit_out.stderr);
-            println!("{} Aside commit: {}", "!".yellow(), err.trim());
+            println!("{} Valet commit: {}", "!".yellow(), err.trim());
         } else {
-            println!("{} Aside committed", "->".cyan());
+            println!("{} Valet committed", "->".cyan());
         }
     }
 
@@ -257,27 +257,27 @@ pub fn sync(message: &str) -> Result<()> {
     Ok(())
 }
 
-/// `git aside push`
+/// `git valet push`
 pub fn push() -> Result<()> {
     let cfg = load_config()?;
 
     let out = sgit(&["push", "origin", &format!("HEAD:{}", cfg.branch)], &cfg)?;
 
     if out.status.success() {
-        println!("{} Aside pushed to {}", "+".green(), cfg.remote.cyan());
+        println!("{} Valet pushed to {}", "+".green(), cfg.remote.cyan());
     } else {
         let err = String::from_utf8_lossy(&out.stderr);
         if err.contains("Everything up-to-date") || err.contains("up to date") {
-            println!("{} Aside already up to date", "+".green());
+            println!("{} Valet already up to date", "+".green());
         } else {
-            println!("{} Aside push failed: {}", "!".yellow(), err.trim());
+            println!("{} Valet push failed: {}", "!".yellow(), err.trim());
         }
     }
 
     Ok(())
 }
 
-/// `git aside pull`
+/// `git valet pull`
 pub fn pull() -> Result<()> {
     let cfg = load_config()?;
 
@@ -286,20 +286,20 @@ pub fn pull() -> Result<()> {
     if out.status.success() {
         let stdout = String::from_utf8_lossy(&out.stdout);
         if stdout.contains("Already up to date") || stdout.contains("up to date") {
-            println!("{} Aside already up to date", "+".green());
+            println!("{} Valet already up to date", "+".green());
         } else {
-            println!("{} Aside updated", "+".green());
+            println!("{} Valet updated", "+".green());
             println!("{}", stdout.trim().dimmed());
         }
     } else {
         let err = String::from_utf8_lossy(&out.stderr);
-        println!("{} Aside pull failed: {}", "!".yellow(), err.trim());
+        println!("{} Valet pull failed: {}", "!".yellow(), err.trim());
     }
 
     Ok(())
 }
 
-/// `git aside add <files>`
+/// `git valet add <files>`
 pub fn add_files(files: &[String]) -> Result<()> {
     let work_tree = get_work_tree()?;
     let origin = get_origin(&work_tree)?;
@@ -322,11 +322,11 @@ pub fn add_files(files: &[String]) -> Result<()> {
     add_args.extend(file_refs.iter());
     sgit(&add_args, &cfg)?;
 
-    println!("{} {} file(s) added to aside", "+".green(), files.len());
+    println!("{} {} file(s) added to valet", "+".green(), files.len());
     Ok(())
 }
 
-/// `git aside deinit`
+/// `git valet deinit`
 pub fn deinit() -> Result<()> {
     let work_tree = get_work_tree()?;
     let origin = get_origin(&work_tree)?;
@@ -335,7 +335,7 @@ pub fn deinit() -> Result<()> {
 
     let cfg = load_config()?;
 
-    println!("{}", "Removing aside repo...".yellow().bold());
+    println!("{}", "Removing valet repo...".yellow().bold());
 
     hooks::uninstall(&git_dir)?;
     println!("{} Hooks removed", "->".cyan());
@@ -346,7 +346,7 @@ pub fn deinit() -> Result<()> {
     config::remove(&project_id)?;
     println!("{} Local config removed", "->".cyan());
 
-    println!("\n{}", "Done! Aside repo removed.".green());
+    println!("\n{}", "Done! Valet repo removed.".green());
     println!("{}", "Note: the remote repo is unchanged.".dimmed());
 
     Ok(())

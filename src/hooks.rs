@@ -5,30 +5,30 @@ use std::path::Path;
 use std::os::unix::fs::PermissionsExt;
 
 const PRE_COMMIT_HOOK: &str = r#"#!/bin/sh
-# git-aside: sync aside repo before commit
-if command -v git-aside >/dev/null 2>&1; then
-    git-aside sync --message "chore: auto-sync before commit" 2>/dev/null || true
+# git-valet: sync valet repo before commit
+if command -v git-valet >/dev/null 2>&1; then
+    git-valet sync --message "chore: auto-sync before commit" 2>/dev/null || true
 fi
 "#;
 
 const PRE_PUSH_HOOK: &str = r#"#!/bin/sh
-# git-aside: sync aside repo before push
-if command -v git-aside >/dev/null 2>&1; then
-    git-aside sync --message "chore: auto-sync before push" 2>/dev/null || true
+# git-valet: sync valet repo before push
+if command -v git-valet >/dev/null 2>&1; then
+    git-valet sync --message "chore: auto-sync before push" 2>/dev/null || true
 fi
 "#;
 
 const POST_MERGE_HOOK: &str = r#"#!/bin/sh
-# git-aside: pull aside repo after merge
-if command -v git-aside >/dev/null 2>&1; then
-    git-aside pull 2>/dev/null || true
+# git-valet: pull valet repo after merge
+if command -v git-valet >/dev/null 2>&1; then
+    git-valet pull 2>/dev/null || true
 fi
 "#;
 
 const POST_CHECKOUT_HOOK: &str = r#"#!/bin/sh
-# git-aside: pull aside repo after checkout
-if command -v git-aside >/dev/null 2>&1; then
-    git-aside pull 2>/dev/null || true
+# git-valet: pull valet repo after checkout
+if command -v git-valet >/dev/null 2>&1; then
+    git-valet pull 2>/dev/null || true
 fi
 "#;
 
@@ -44,9 +44,9 @@ const HOOKS: &[HookInstall] = &[
     HookInstall { name: "post-checkout", content: POST_CHECKOUT_HOOK },
 ];
 
-const SHADOW_MARKER: &str = "# git-aside:";
+const SHADOW_MARKER: &str = "# git-valet:";
 
-/// Installs git-aside hooks in the main repo
+/// Installs git-valet hooks in the main repo
 pub fn install(git_dir: &Path) -> Result<()> {
     let hooks_dir = git_dir.join("hooks");
     std::fs::create_dir_all(&hooks_dir)?;
@@ -79,7 +79,7 @@ pub fn install(git_dir: &Path) -> Result<()> {
     Ok(())
 }
 
-/// Uninstalls git-aside hooks
+/// Uninstalls git-valet hooks
 pub fn uninstall(git_dir: &Path) -> Result<()> {
     let hooks_dir = git_dir.join("hooks");
 
@@ -95,17 +95,17 @@ pub fn uninstall(git_dir: &Path) -> Result<()> {
             continue;
         }
 
-        // Filter out the git-aside block (marker + following lines until "fi")
+        // Filter out the git-valet block (marker + following lines until "fi")
         let mut filtered = Vec::new();
-        let mut in_aside_block = false;
+        let mut in_valet_block = false;
         for line in content.lines() {
             if line.contains(SHADOW_MARKER) {
-                in_aside_block = true;
+                in_valet_block = true;
                 continue;
             }
-            if in_aside_block {
+            if in_valet_block {
                 if line.trim() == "fi" {
-                    in_aside_block = false;
+                    in_valet_block = false;
                 }
                 continue;
             }

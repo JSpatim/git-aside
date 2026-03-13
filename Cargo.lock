@@ -248,7 +248,7 @@ dependencies = [
 ]
 
 [[package]]
-name = "git-aside"
+name = "git-valet"
 version = "0.1.0"
 dependencies = [
  "anyhow",

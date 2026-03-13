@@ -38,7 +38,7 @@ fn project_id_differs_for_different_remotes() {
 #[test]
 fn config_roundtrip_toml() {
     #[derive(Debug, serde::Serialize, serde::Deserialize, PartialEq)]
-    struct AsideConfig {
+    struct ValetConfig {
         work_tree: String,
         remote: String,
         bare_path: String,
@@ -51,16 +51,16 @@ fn config_roundtrip_toml() {
         "main".to_string()
     }
 
-    let cfg = AsideConfig {
+    let cfg = ValetConfig {
         work_tree: "/home/user/project".to_string(),
         remote: "git@github.com:user/project-private.git".to_string(),
-        bare_path: "/home/user/.git-asides/abc123/repo.git".to_string(),
+        bare_path: "/home/user/.git-valets/abc123/repo.git".to_string(),
         tracked: vec!["CLAUDE.md".to_string(), ".env".to_string()],
         branch: "main".to_string(),
     };
 
     let serialized = toml::to_string_pretty(&cfg).unwrap();
-    let deserialized: AsideConfig = toml::from_str(&serialized).unwrap();
+    let deserialized: ValetConfig = toml::from_str(&serialized).unwrap();
 
     assert_eq!(cfg, deserialized);
 }
@@ -68,7 +68,7 @@ fn config_roundtrip_toml() {
 #[test]
 fn config_toml_default_branch() {
     #[derive(Debug, serde::Serialize, serde::Deserialize, PartialEq)]
-    struct AsideConfig {
+    struct ValetConfig {
         work_tree: String,
         remote: String,
         bare_path: String,
@@ -85,10 +85,10 @@ fn config_toml_default_branch() {
     let toml_str = r#"
 work_tree = "/home/user/project"
 remote = "git@github.com:user/project-private.git"
-bare_path = "/home/user/.git-asides/abc123/repo.git"
+bare_path = "/home/user/.git-valets/abc123/repo.git"
 tracked = ["CLAUDE.md"]
 "#;
 
-    let cfg: AsideConfig = toml::from_str(toml_str).unwrap();
+    let cfg: ValetConfig = toml::from_str(toml_str).unwrap();
     assert_eq!(cfg.branch, "main");
 }

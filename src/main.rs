@@ -1,16 +1,16 @@
 mod config;
 mod git_helpers;
 mod hooks;
-mod aside;
+mod valet;
 
 use anyhow::Result;
 use clap::{Parser, Subcommand};
 
 #[derive(Parser)]
 #[command(
-    name = "git-aside",
-    about = "Version specific files in a separate private repo, transparently alongside your usual git commands",
-    long_about = "git-aside — version sensitive files in a separate private repo,\ntransparently alongside your usual git commands."
+    name = "git-valet",
+    about = "Transparently version private files in a separate private repo, synced via git hooks",
+    long_about = "git-valet — transparently version private files (.env, secrets, notes, AI prompts)\nin a separate private repo, synced via git hooks. Zero workflow change."
 )]
 struct Cli {
     #[command(subcommand)]
@@ -19,29 +19,29 @@ struct Cli {
 
 #[derive(Subcommand)]
 enum Commands {
-    /// Initialize an aside repo for this project
+    /// Initialize a valet repo for this project
     Init {
-        /// Remote of the aside repo (e.g. git@github.com:user/project-private.git)
+        /// Remote of the valet repo (e.g. git@github.com:user/project-private.git)
         remote: String,
-        /// Files/directories to track in the aside repo
+        /// Files/directories to track in the valet repo
         files: Vec<String>,
     },
-    /// Show the aside repo status
+    /// Show the valet repo status
     Status,
-    /// Synchronize the aside repo (add + commit + push)
+    /// Synchronize the valet repo (add + commit + push)
     Sync {
-        #[arg(short, long, default_value = "chore: sync aside")]
+        #[arg(short, long, default_value = "chore: sync valet")]
         message: String,
     },
-    /// Push the aside repo
+    /// Push the valet repo
     Push,
-    /// Pull the aside repo
+    /// Pull the valet repo
     Pull,
-    /// Add files to the aside repo
+    /// Add files to the valet repo
     Add {
         files: Vec<String>,
     },
-    /// Remove git-aside from this project (hooks + config)
+    /// Remove git-valet from this project (hooks + config)
     Deinit,
 }
 
@@ -51,27 +51,27 @@ fn main() -> Result<()> {
     match cli.command {
         Commands::Init { remote, files } => {
             if files.is_empty() {
-                anyhow::bail!("Specify at least one file to track. Example: git aside init <remote> CLAUDE.md .claude/");
+                anyhow::bail!("Specify at least one file to track. Example: git valet init <remote> .env notes/");
             }
-            aside::init(&remote, &files)?;
+            valet::init(&remote, &files)?;
         }
         Commands::Status => {
-            aside::status()?;
+            valet::status()?;
         }
         Commands::Sync { message } => {
-            aside::sync(&message)?;
+            valet::sync(&message)?;
         }
         Commands::Push => {
-            aside::push()?;
+            valet::push()?;
         }
         Commands::Pull => {
-            aside::pull()?;
+            valet::pull()?;
         }
         Commands::Add { files } => {
-            aside::add_files(&files)?;
+            valet::add_files(&files)?;
         }
         Commands::Deinit => {
-            aside::deinit()?;
+            valet::deinit()?;
         }
     }
 
