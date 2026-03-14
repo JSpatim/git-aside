@@ -25,9 +25,18 @@ pub fn git(args: &[&str], work_tree: &Path) -> Result<Output> {
     Ok(out)
 }
 
-/// Runs a git command against the valet bare repo + work-tree (does not check exit status)
+/// Runs a git command against the valet bare repo + work-tree (does not check exit status).
+///
+/// Clears inherited git env vars (GIT_INDEX_FILE, GIT_DIR, etc.) to prevent
+/// the main repo's state from leaking into the valet subprocess — especially
+/// critical when called from git hooks where these vars are set by git.
 pub fn sgit(args: &[&str], config: &ValetConfig) -> Result<Output> {
     let out = Command::new("git")
+        .env_remove("GIT_INDEX_FILE")
+        .env_remove("GIT_DIR")
+        .env_remove("GIT_WORK_TREE")
+        .env_remove("GIT_OBJECT_DIRECTORY")
+        .env_remove("GIT_ALTERNATE_OBJECT_DIRECTORIES")
         .arg("--git-dir")
         .arg(&config.bare_path)
         .arg("--work-tree")
