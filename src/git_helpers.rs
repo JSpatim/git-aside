@@ -1,20 +1,31 @@
-use anyhow::{Context, Result};
+//! Git command wrappers for both the main repo and the valet bare repo.
+
+use anyhow::{Context, Result, bail};
 use std::path::{Path, PathBuf};
 use std::process::{Command, Output};
 
 use crate::config::ValetConfig;
 
-/// Runs a git command in the main repo
+/// Converts a Path to a UTF-8 string, with a descriptive error on failure.
+pub fn path_str(path: &Path) -> Result<&str> {
+    path.to_str().with_context(|| format!("Path contains invalid UTF-8: {}", path.display()))
+}
+
+/// Runs a git command in the main repo and checks exit status
 pub fn git(args: &[&str], work_tree: &Path) -> Result<Output> {
     let out = Command::new("git")
         .args(args)
         .current_dir(work_tree)
         .output()
         .context("Failed to execute git")?;
+    if !out.status.success() {
+        let stderr = String::from_utf8_lossy(&out.stderr);
+        bail!("git {} failed: {}", args.first().unwrap_or(&""), stderr.trim());
+    }
     Ok(out)
 }
 
-/// Runs a git command against the valet bare repo + work-tree
+/// Runs a git command against the valet bare repo + work-tree (does not check exit status)
 pub fn sgit(args: &[&str], config: &ValetConfig) -> Result<Output> {
     let out = Command::new("git")
         .arg("--git-dir")
@@ -53,7 +64,7 @@ pub fn get_work_tree() -> Result<PathBuf> {
         .context("Not inside a git repository")?;
     let s = String::from_utf8_lossy(&out.stdout).trim().to_string();
     if s.is_empty() {
-        anyhow::bail!("Not inside a git repository");
+        bail!("Not inside a git repository");
     }
     Ok(PathBuf::from(s))
 }

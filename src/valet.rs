@@ -1,50 +1,90 @@
-use anyhow::Result;
+//! Core valet logic: init, sync, push, pull, add, deinit.
+
+use anyhow::{Result, bail};
 use colored::Colorize;
 use std::path::{Path, PathBuf};
 use std::process::Command;
 
 use crate::config::{self, ValetConfig};
-use crate::git_helpers::{get_git_dir, get_origin, get_work_tree, load_config, sgit};
+use crate::git_helpers::{get_git_dir, get_origin, get_work_tree, load_config, path_str, sgit};
 use crate::hooks;
 
 const VALET_FILE: &str = ".gitvalet";
 
+// ── Path validation & normalization ─────────────────────────────────────────
+
+/// Normalizes path separators to forward slashes (git convention on all platforms).
+fn normalize_path(entry: &str) -> String {
+    entry.replace('\\', "/")
+}
+
+/// Validates that a tracked file path does not escape the work tree.
+fn validate_path(entry: &str) -> Result<()> {
+    let normalized = normalize_path(entry);
+    let path = Path::new(&normalized);
+
+    // Reject absolute paths (including Unix-style on Windows)
+    if path.is_absolute() || normalized.starts_with('/') {
+        bail!("Tracked path must be relative: {entry}");
+    }
+
+    // Reject paths that escape the work tree via ..
+    for component in path.components() {
+        if matches!(component, std::path::Component::ParentDir) {
+            bail!("Tracked path must not contain '..': {entry}");
+        }
+    }
+
+    Ok(())
+}
+
 // ── .gitvalet file ──────────────────────────────────────────────────────────
 
 /// Reads the .gitvalet file and returns the list of tracked entries.
+/// Normalizes path separators to `/` on all platforms.
 /// Returns an empty Vec if the file does not exist.
 fn read_gitvalet(work_tree: &Path) -> Vec<String> {
     let path = work_tree.join(VALET_FILE);
     if !path.exists() {
         return Vec::new();
     }
-    let content = match std::fs::read_to_string(&path) {
-        Ok(c) => c,
-        Err(_) => return Vec::new(),
+    let Ok(content) = std::fs::read_to_string(&path) else {
+        return Vec::new();
     };
     content
         .lines()
-        .map(|l| l.trim())
+        .map(str::trim)
         .filter(|l| !l.is_empty() && !l.starts_with('#'))
-        .map(|l| l.to_string())
+        .map(normalize_path)
         .collect()
 }
 
-/// Writes the .gitvalet file with the given entries.
-fn write_gitvalet(work_tree: &Path, files: &[String]) -> Result<()> {
-    let path = work_tree.join(VALET_FILE);
-    let content = files.join("\n") + "\n";
-    std::fs::write(&path, content)?;
-    Ok(())
+/// Reads and validates all entries from .gitvalet.
+fn read_gitvalet_validated(work_tree: &Path) -> Result<Vec<String>> {
+    let entries = read_gitvalet(work_tree);
+    for entry in &entries {
+        validate_path(entry)?;
+    }
+    Ok(entries)
 }
 
 /// Returns tracked files from .gitvalet + .gitvalet itself (always implicitly tracked).
-fn tracked_with_gitvalet(work_tree: &Path) -> Vec<String> {
-    let mut tracked = read_gitvalet(work_tree);
+/// Validates all paths before returning.
+fn tracked_with_gitvalet_validated(work_tree: &Path) -> Result<Vec<String>> {
+    let mut tracked = read_gitvalet_validated(work_tree)?;
     if !tracked.iter().any(|f| f == VALET_FILE) {
         tracked.push(VALET_FILE.to_string());
     }
-    tracked
+    Ok(tracked)
+}
+
+/// Writes the .gitvalet file with the given entries (normalized to `/`).
+fn write_gitvalet(work_tree: &Path, files: &[String]) -> Result<()> {
+    let path = work_tree.join(VALET_FILE);
+    let normalized: Vec<String> = files.iter().map(|f| normalize_path(f)).collect();
+    let content = normalized.join("\n") + "\n";
+    std::fs::write(&path, content)?;
+    Ok(())
 }
 
 // ── Gitignore ────────────────────────────────────────────────────────────────
@@ -56,11 +96,8 @@ fn update_exclude(git_dir: &Path, files: &[String]) -> Result<()> {
     std::fs::create_dir_all(&info_dir)?;
     let exclude_path = info_dir.join("exclude");
 
-    let existing = if exclude_path.exists() {
-        std::fs::read_to_string(&exclude_path)?
-    } else {
-        String::new()
-    };
+    let existing =
+        if exclude_path.exists() { std::fs::read_to_string(&exclude_path)? } else { String::new() };
 
     // Remove any existing git-valet section
     let marker = "# git-valet: files versioned in the valet repo";
@@ -72,8 +109,6 @@ fn update_exclude(git_dir: &Path, files: &[String]) -> Result<()> {
             continue;
         }
         if in_valet_section {
-            // Valet section entries are non-empty, non-comment lines after the marker.
-            // An empty line or another comment signals the end of the section.
             if line.trim().is_empty() || (line.starts_with('#') && line.trim() != marker) {
                 in_valet_section = false;
                 base_lines.push(line);
@@ -84,7 +119,7 @@ fn update_exclude(git_dir: &Path, files: &[String]) -> Result<()> {
     }
 
     // Remove trailing empty lines from base
-    while base_lines.last().map_or(false, |l| l.trim().is_empty()) {
+    while base_lines.last().is_some_and(|l| l.trim().is_empty()) {
         base_lines.pop();
     }
 
@@ -94,7 +129,9 @@ fn update_exclude(git_dir: &Path, files: &[String]) -> Result<()> {
     }
 
     if !files.is_empty() {
-        content.push_str(&format!("\n{}\n", marker));
+        content.push('\n');
+        content.push_str(marker);
+        content.push('\n');
         for f in files {
             content.push_str(f);
             content.push('\n');
@@ -129,6 +166,84 @@ fn remove_from_exclude(git_dir: &Path, files: &[String]) -> Result<()> {
 
 // ── Public commands ──────────────────────────────────────────────────────────
 
+/// First-time init: files provided, create .gitvalet and push
+fn init_with_files(
+    work_tree: &Path,
+    git_dir: &Path,
+    files: &[String],
+    cfg: &mut ValetConfig,
+    project_id: &str,
+) -> Result<()> {
+    for f in files {
+        validate_path(f)?;
+    }
+    write_gitvalet(work_tree, files)?;
+    println!("{} .gitvalet created with {} entries", "->".cyan(), files.len());
+
+    let tracked = tracked_with_gitvalet_validated(work_tree)?;
+    cfg.tracked.clone_from(&tracked);
+    config::save(cfg, project_id)?;
+    update_exclude(git_dir, &tracked)?;
+
+    let existing: Vec<&str> =
+        tracked.iter().filter(|f| work_tree.join(f).exists()).map(String::as_str).collect();
+
+    if !existing.is_empty() {
+        let mut add_args = vec!["add", "-f"];
+        add_args.extend(existing.iter());
+        sgit(&add_args, cfg)?;
+
+        let commit_out = sgit(&["commit", "-m", "feat: init valet repo"], cfg)?;
+        if commit_out.status.success() {
+            println!("{} Initial commit done", "->".cyan());
+
+            let push_out = sgit(&["push", "-u", "origin", &format!("HEAD:{}", cfg.branch)], cfg)?;
+            if push_out.status.success() {
+                println!("{} Initial push done", "->".cyan());
+            } else {
+                let err = String::from_utf8_lossy(&push_out.stderr);
+                println!(
+                    "{} Initial push failed (remote unreachable?): {}",
+                    "!".yellow(),
+                    err.trim()
+                );
+                println!("  You can push manually with: {}", "git valet push".cyan());
+            }
+        }
+    }
+    Ok(())
+}
+
+/// Fresh clone init: no files provided, fetch from remote
+fn init_fresh_clone(
+    work_tree: &Path,
+    git_dir: &Path,
+    cfg: &mut ValetConfig,
+    project_id: &str,
+) -> Result<()> {
+    config::save(cfg, project_id)?;
+
+    let fetch_out = sgit(&["fetch", "origin", &cfg.branch], cfg)?;
+    if fetch_out.status.success() {
+        let checkout_out = sgit(&["checkout", &format!("origin/{}", cfg.branch), "--", "."], cfg)?;
+        if checkout_out.status.success() {
+            sgit(&["branch", &cfg.branch, &format!("origin/{}", cfg.branch)], cfg)?;
+            sgit(&["symbolic-ref", "HEAD", &format!("refs/heads/{}", cfg.branch)], cfg)?;
+            println!("{} Pulled existing files from remote", "->".cyan());
+
+            let tracked = tracked_with_gitvalet_validated(work_tree)?;
+            cfg.tracked.clone_from(&tracked);
+            config::save(cfg, project_id)?;
+            update_exclude(git_dir, &tracked)?;
+        } else {
+            println!("{} Remote exists but checkout failed", "!".yellow());
+        }
+    } else {
+        println!("{} Remote is empty — create a .gitvalet file and run git valet sync", "i".blue());
+    }
+    Ok(())
+}
+
 /// `git valet init <remote> [files...]`
 pub fn init(remote: &str, files: &[String]) -> Result<()> {
     let work_tree = get_work_tree()?;
@@ -137,110 +252,63 @@ pub fn init(remote: &str, files: &[String]) -> Result<()> {
 
     let project_id = config::project_id(&origin);
     let bare_path = config::valets_dir()?.join(&project_id).join("repo.git");
+    let bare_path = dunce::simplified(&bare_path).to_path_buf();
+    let bare_str = path_str(&bare_path)?;
 
     println!("{}", "Initializing valet repo...".bold());
     println!("  Project : {}", origin.dimmed());
     println!("  Valet   : {}", remote.cyan());
-    println!("  Bare repo : {}", bare_path.display().to_string().dimmed());
+    println!("  Bare repo : {}", bare_str.dimmed());
 
     // 1. Init bare repo
     std::fs::create_dir_all(&bare_path)?;
-    let init_out = Command::new("git")
-        .args(["init", "--bare", bare_path.to_str().unwrap()])
-        .output()?;
+    let init_out = Command::new("git").args(["init", "--bare", bare_str]).output()?;
     if !init_out.status.success() {
-        anyhow::bail!("Failed to initialize bare repo");
+        bail!("Failed to initialize bare repo");
     }
 
     // 2. Temporary config (tracked list will be finalized below)
+    let work_str = path_str(&work_tree)?;
     let mut cfg = ValetConfig {
-        work_tree: work_tree.to_str().unwrap().to_string(),
+        work_tree: work_str.to_string(),
         remote: remote.to_string(),
-        bare_path: bare_path.to_str().unwrap().to_string(),
+        bare_path: bare_str.to_string(),
         tracked: vec![VALET_FILE.to_string()],
         branch: "main".to_string(),
     };
 
     // 3. Hide untracked files from sgit status
-    Command::new("git")
-        .args(["--git-dir", bare_path.to_str().unwrap(), "config", "status.showUntrackedFiles", "no"])
+    let config_out = Command::new("git")
+        .args(["--git-dir", bare_str, "config", "status.showUntrackedFiles", "no"])
         .output()?;
+    if !config_out.status.success() {
+        bail!("Failed to configure valet repo");
+    }
 
     // 4. Remote
     let remote_out = Command::new("git")
-        .args(["--git-dir", bare_path.to_str().unwrap(), "remote", "add", "origin", remote])
+        .args(["--git-dir", bare_str, "remote", "add", "origin", remote])
         .output()?;
     if !remote_out.status.success() {
-        Command::new("git")
-            .args(["--git-dir", bare_path.to_str().unwrap(), "remote", "set-url", "origin", remote])
+        let set_url_out = Command::new("git")
+            .args(["--git-dir", bare_str, "remote", "set-url", "origin", remote])
             .output()?;
+        if !set_url_out.status.success() {
+            bail!("Failed to set valet remote URL");
+        }
     }
 
     // 5. Hooks
     hooks::install(&git_dir)?;
-    println!("{} Git hooks installed (pre-commit, pre-push, post-merge, post-checkout)", "->".cyan());
+    println!(
+        "{} Git hooks installed (pre-commit, pre-push, post-merge, post-checkout)",
+        "->".cyan()
+    );
 
-    if !files.is_empty() {
-        // ── First setup: files provided → create .gitvalet ──────────────
-        write_gitvalet(&work_tree, files)?;
-        println!("{} .gitvalet created with {} entries", "->".cyan(), files.len());
-
-        let tracked = tracked_with_gitvalet(&work_tree);
-        cfg.tracked = tracked.clone();
-        config::save(&cfg, &project_id)?;
-        update_exclude(&git_dir, &tracked)?;
-
-        let existing: Vec<&str> = tracked
-            .iter()
-            .filter(|f| work_tree.join(f).exists())
-            .map(|f| f.as_str())
-            .collect();
-
-        if !existing.is_empty() {
-            let mut add_args = vec!["add", "-f"];
-            add_args.extend(existing.iter());
-            sgit(&add_args, &cfg)?;
-
-            let commit_out = sgit(&["commit", "-m", "feat: init valet repo"], &cfg)?;
-            if commit_out.status.success() {
-                println!("{} Initial commit done", "->".cyan());
-
-                let push_out = sgit(&["push", "-u", "origin", &format!("HEAD:{}", cfg.branch)], &cfg)?;
-                if push_out.status.success() {
-                    println!("{} Initial push done", "->".cyan());
-                } else {
-                    let err = String::from_utf8_lossy(&push_out.stderr);
-                    println!("{} Initial push failed (remote unreachable?): {}", "!".yellow(), err.trim());
-                    println!("  You can push manually with: {}", "git valet push".cyan());
-                }
-            }
-        }
+    if files.is_empty() {
+        init_fresh_clone(&work_tree, &git_dir, &mut cfg, &project_id)?;
     } else {
-        // ── Fresh clone: no files → fetch remote, read .gitvalet ────────
-        config::save(&cfg, &project_id)?;
-
-        let fetch_out = sgit(&["fetch", "origin", &cfg.branch], &cfg)?;
-        if fetch_out.status.success() {
-            let checkout_out = sgit(
-                &["checkout", &format!("origin/{}", cfg.branch), "--", "."],
-                &cfg,
-            )?;
-            if checkout_out.status.success() {
-                sgit(&["branch", &cfg.branch, &format!("origin/{}", cfg.branch)], &cfg)?;
-                sgit(&["symbolic-ref", "HEAD", &format!("refs/heads/{}", cfg.branch)], &cfg)?;
-                println!("{} Pulled existing files from remote", "->".cyan());
-
-                // Read .gitvalet that was just checked out
-                let tracked = tracked_with_gitvalet(&work_tree);
-                cfg.tracked = tracked.clone();
-                config::save(&cfg, &project_id)?;
-                update_exclude(&git_dir, &tracked)?;
-            } else {
-                println!("{} Remote exists but checkout failed", "!".yellow());
-            }
-        } else {
-            println!("{} Remote is empty — create a .gitvalet file and run git valet sync", "i".blue());
-        }
+        init_with_files(&work_tree, &git_dir, files, &mut cfg, &project_id)?;
     }
 
     let tracked = &cfg.tracked;
@@ -261,7 +329,7 @@ pub fn status() -> Result<()> {
     let work_tree = PathBuf::from(&cfg.work_tree);
 
     // Show tracked files from .gitvalet (source of truth)
-    let tracked = tracked_with_gitvalet(&work_tree);
+    let tracked = tracked_with_gitvalet_validated(&work_tree)?;
 
     println!("{}", "Valet repo status".bold());
     println!("  Remote  : {}", cfg.remote.cyan());
@@ -269,13 +337,17 @@ pub fn status() -> Result<()> {
     for f in &tracked {
         let exists = work_tree.join(f).exists();
         let marker = if exists { "+".green() } else { "x".red() };
-        println!("    {} {}", marker, f);
+        println!("    {marker} {f}");
     }
     println!();
 
     let head_check = sgit(&["rev-parse", "HEAD"], &cfg)?;
     if !head_check.status.success() {
-        println!("{}", "Valet repo has no commits yet — run `git valet sync` to create the initial commit.".yellow());
+        println!(
+            "{}",
+            "Valet repo has no commits yet — run `git valet sync` to create the initial commit."
+                .yellow()
+        );
         return Ok(());
     }
 
@@ -284,7 +356,7 @@ pub fn status() -> Result<()> {
     if stdout.trim().is_empty() {
         println!("{}", "Nothing to commit — valet repo is clean.".green());
     } else {
-        println!("{}", stdout);
+        println!("{stdout}");
     }
 
     Ok(())
@@ -297,20 +369,17 @@ pub fn sync(message: &str) -> Result<()> {
     let git_dir = get_git_dir(&work_tree)?;
 
     // Re-read .gitvalet to pick up any changes
-    let tracked = tracked_with_gitvalet(&work_tree);
+    let tracked = tracked_with_gitvalet_validated(&work_tree)?;
     if tracked != cfg.tracked {
         let origin = get_origin(&work_tree)?;
         let project_id = config::project_id(&origin);
-        cfg.tracked = tracked.clone();
+        cfg.tracked.clone_from(&tracked);
         config::save(&cfg, &project_id)?;
         update_exclude(&git_dir, &tracked)?;
     }
 
-    let existing: Vec<&str> = cfg.tracked
-        .iter()
-        .filter(|f| work_tree.join(f).exists())
-        .map(|f| f.as_str())
-        .collect();
+    let existing: Vec<&str> =
+        cfg.tracked.iter().filter(|f| work_tree.join(f).exists()).map(String::as_str).collect();
 
     if existing.is_empty() {
         println!("{}", "No tracked files found.".yellow());
@@ -325,15 +394,16 @@ pub fn sync(message: &str) -> Result<()> {
     let is_empty_repo = !head_check.status.success();
 
     let status_out = sgit(&["status", "--porcelain"], &cfg)?;
-    let has_changes = is_empty_repo || !String::from_utf8_lossy(&status_out.stdout).trim().is_empty();
+    let has_changes =
+        is_empty_repo || !String::from_utf8_lossy(&status_out.stdout).trim().is_empty();
 
     if has_changes {
         let commit_out = sgit(&["commit", "-m", message], &cfg)?;
-        if !commit_out.status.success() {
+        if commit_out.status.success() {
+            println!("{} Valet committed", "->".cyan());
+        } else {
             let err = String::from_utf8_lossy(&commit_out.stderr);
             println!("{} Valet commit: {}", "!".yellow(), err.trim());
-        } else {
-            println!("{} Valet committed", "->".cyan());
         }
     }
 
@@ -377,12 +447,12 @@ pub fn pull() -> Result<()> {
 
             // Re-read .gitvalet in case it was updated by the pull
             let work_tree = PathBuf::from(&cfg.work_tree);
-            let tracked = tracked_with_gitvalet(&work_tree);
+            let tracked = tracked_with_gitvalet_validated(&work_tree)?;
             if tracked != cfg.tracked {
                 let origin = get_origin(&work_tree)?;
                 let project_id = config::project_id(&origin);
                 let git_dir = get_git_dir(&work_tree)?;
-                cfg.tracked = tracked.clone();
+                cfg.tracked.clone_from(&tracked);
                 config::save(&cfg, &project_id)?;
                 update_exclude(&git_dir, &tracked)?;
             }
@@ -402,28 +472,31 @@ pub fn add_files(files: &[String]) -> Result<()> {
     let project_id = config::project_id(&origin);
     let git_dir = get_git_dir(&work_tree)?;
 
-    // Read current .gitvalet and merge new entries
+    // Validate new paths before adding
+    for f in files {
+        validate_path(f)?;
+    }
+
+    // Read current .gitvalet and merge new entries (normalized)
     let mut entries = read_gitvalet(&work_tree);
     for f in files {
-        if !entries.contains(f) {
-            entries.push(f.clone());
+        let normalized = normalize_path(f);
+        if !entries.contains(&normalized) {
+            entries.push(normalized);
         }
     }
     write_gitvalet(&work_tree, &entries)?;
 
     // Update config + excludes
-    let tracked = tracked_with_gitvalet(&work_tree);
+    let tracked = tracked_with_gitvalet_validated(&work_tree)?;
     let mut cfg = load_config()?;
-    cfg.tracked = tracked.clone();
+    cfg.tracked.clone_from(&tracked);
     config::save(&cfg, &project_id)?;
     update_exclude(&git_dir, &tracked)?;
 
     // Stage the new files + .gitvalet itself
-    let existing: Vec<&str> = tracked
-        .iter()
-        .filter(|f| work_tree.join(f).exists())
-        .map(|f| f.as_str())
-        .collect();
+    let existing: Vec<&str> =
+        tracked.iter().filter(|f| work_tree.join(f).exists()).map(String::as_str).collect();
     let mut add_args = vec!["add", "-f"];
     add_args.extend(existing.iter());
     sgit(&add_args, &cfg)?;
@@ -458,7 +531,10 @@ pub fn deinit() -> Result<()> {
     println!("{} Local config removed", "->".cyan());
 
     println!("\n{}", "Done! Valet repo removed.".green());
-    println!("{}", "Note: the remote repo and local files (.gitvalet, etc.) are unchanged.".dimmed());
+    println!(
+        "{}",
+        "Note: the remote repo and local files (.gitvalet, etc.) are unchanged.".dimmed()
+    );
 
     Ok(())
 }
@@ -469,6 +545,19 @@ pub fn deinit() -> Result<()> {
 mod tests {
     use super::*;
     use tempfile::TempDir;
+
+    // ── path normalization ──────────────────────────────────────────────
+
+    #[test]
+    fn normalize_path_converts_backslashes() {
+        assert_eq!(normalize_path(r"secrets\key.pem"), "secrets/key.pem");
+        assert_eq!(normalize_path(r"a\b\c"), "a/b/c");
+    }
+
+    #[test]
+    fn normalize_path_keeps_forward_slashes() {
+        assert_eq!(normalize_path("secrets/key.pem"), "secrets/key.pem");
+    }
 
     // ── .gitvalet read/write ─────────────────────────────────────────────
 
@@ -482,11 +571,7 @@ mod tests {
     #[test]
     fn read_gitvalet_parses_entries() {
         let tmp = TempDir::new().unwrap();
-        std::fs::write(
-            tmp.path().join(".gitvalet"),
-            ".env\nsecrets/\nnotes/ai.md\n",
-        )
-        .unwrap();
+        std::fs::write(tmp.path().join(".gitvalet"), ".env\nsecrets/\nnotes/ai.md\n").unwrap();
 
         let result = read_gitvalet(tmp.path());
         assert_eq!(result, vec![".env", "secrets/", "notes/ai.md"]);
@@ -515,6 +600,15 @@ mod tests {
     }
 
     #[test]
+    fn read_gitvalet_normalizes_backslashes() {
+        let tmp = TempDir::new().unwrap();
+        std::fs::write(tmp.path().join(".gitvalet"), "secrets\\key.pem\n").unwrap();
+
+        let result = read_gitvalet(tmp.path());
+        assert_eq!(result, vec!["secrets/key.pem"]);
+    }
+
+    #[test]
     fn write_gitvalet_creates_file() {
         let tmp = TempDir::new().unwrap();
         let files = vec![".env".to_string(), "secrets/".to_string()];
@@ -523,6 +617,17 @@ mod tests {
 
         let content = std::fs::read_to_string(tmp.path().join(".gitvalet")).unwrap();
         assert_eq!(content, ".env\nsecrets/\n");
+    }
+
+    #[test]
+    fn write_gitvalet_normalizes_backslashes() {
+        let tmp = TempDir::new().unwrap();
+        let files = vec!["secrets\\key.pem".to_string()];
+
+        write_gitvalet(tmp.path(), &files).unwrap();
+
+        let content = std::fs::read_to_string(tmp.path().join(".gitvalet")).unwrap();
+        assert_eq!(content, "secrets/key.pem\n");
     }
 
     #[test]
@@ -543,7 +648,7 @@ mod tests {
         let tmp = TempDir::new().unwrap();
         std::fs::write(tmp.path().join(".gitvalet"), ".env\n").unwrap();
 
-        let result = tracked_with_gitvalet(tmp.path());
+        let result = tracked_with_gitvalet_validated(tmp.path()).unwrap();
         assert_eq!(result, vec![".env", ".gitvalet"]);
     }
 
@@ -552,7 +657,7 @@ mod tests {
         let tmp = TempDir::new().unwrap();
         std::fs::write(tmp.path().join(".gitvalet"), ".env\n.gitvalet\n").unwrap();
 
-        let result = tracked_with_gitvalet(tmp.path());
+        let result = tracked_with_gitvalet_validated(tmp.path()).unwrap();
         assert_eq!(result, vec![".env", ".gitvalet"]);
     }
 
@@ -560,7 +665,7 @@ mod tests {
     fn tracked_with_gitvalet_returns_just_itself_when_no_file() {
         let tmp = TempDir::new().unwrap();
 
-        let result = tracked_with_gitvalet(tmp.path());
+        let result = tracked_with_gitvalet_validated(tmp.path()).unwrap();
         assert_eq!(result, vec![".gitvalet"]);
     }
 
@@ -603,24 +708,15 @@ mod tests {
         let git_dir = tmp.path();
         std::fs::create_dir_all(git_dir.join("info")).unwrap();
 
-        // First update with .env
         let files1 = vec![".env".to_string(), ".gitvalet".to_string()];
         update_exclude(git_dir, &files1).unwrap();
 
-        // Second update with .env + secrets/
         let files2 = vec![".env".to_string(), "secrets/".to_string(), ".gitvalet".to_string()];
         update_exclude(git_dir, &files2).unwrap();
 
         let content = std::fs::read_to_string(git_dir.join("info/exclude")).unwrap();
-
-        // Only one marker section
-        assert_eq!(
-            content.matches("# git-valet: files versioned in the valet repo").count(),
-            1
-        );
-        // New file is present
+        assert_eq!(content.matches("# git-valet: files versioned in the valet repo").count(), 1);
         assert!(content.contains("secrets/"));
-        // Old file still present
         assert!(content.contains(".env"));
     }
 
@@ -636,7 +732,6 @@ mod tests {
         )
         .unwrap();
 
-        // Update with empty list
         update_exclude(git_dir, &[]).unwrap();
 
         let content = std::fs::read_to_string(info_dir.join("exclude")).unwrap();
@@ -672,7 +767,57 @@ mod tests {
     fn remove_from_exclude_noop_when_no_file() {
         let tmp = TempDir::new().unwrap();
         let files = vec![".env".to_string()];
-        // Should not panic
         remove_from_exclude(tmp.path(), &files).unwrap();
+    }
+
+    // ── path validation ────────────────────────────────────────────────
+
+    #[test]
+    fn validate_path_accepts_relative_paths() {
+        assert!(validate_path(".env").is_ok());
+        assert!(validate_path("secrets/key.pem").is_ok());
+        assert!(validate_path("a/b/c").is_ok());
+    }
+
+    #[test]
+    fn validate_path_rejects_parent_traversal() {
+        assert!(validate_path("../outside").is_err());
+        assert!(validate_path("a/../../etc/passwd").is_err());
+        assert!(validate_path("..").is_err());
+    }
+
+    #[test]
+    fn validate_path_rejects_absolute_paths() {
+        assert!(validate_path("/etc/passwd").is_err());
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn validate_path_rejects_windows_absolute() {
+        assert!(validate_path("C:\\Windows\\System32").is_err());
+    }
+
+    #[test]
+    fn validate_path_handles_backslash_traversal() {
+        assert!(validate_path(r"..\outside").is_err());
+        assert!(validate_path(r"a\..\..\etc").is_err());
+    }
+
+    #[test]
+    fn tracked_with_gitvalet_validated_rejects_bad_paths() {
+        let tmp = TempDir::new().unwrap();
+        std::fs::write(tmp.path().join(".gitvalet"), "../escape\n").unwrap();
+
+        let result = tracked_with_gitvalet_validated(tmp.path());
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn tracked_with_gitvalet_validated_accepts_good_paths() {
+        let tmp = TempDir::new().unwrap();
+        std::fs::write(tmp.path().join(".gitvalet"), ".env\nsecrets/key.pem\n").unwrap();
+
+        let result = tracked_with_gitvalet_validated(tmp.path()).unwrap();
+        assert_eq!(result, vec![".env", "secrets/key.pem", ".gitvalet"]);
     }
 }

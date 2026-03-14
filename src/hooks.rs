@@ -1,3 +1,5 @@
+//! Git hook installation and uninstallation for transparent valet syncing.
+
 use anyhow::Result;
 use std::path::Path;
 
@@ -18,19 +20,19 @@ if command -v git-valet >/dev/null 2>&1; then
 fi
 "#;
 
-const POST_MERGE_HOOK: &str = r#"#!/bin/sh
+const POST_MERGE_HOOK: &str = r"#!/bin/sh
 # git-valet: pull valet repo after merge
 if command -v git-valet >/dev/null 2>&1; then
     git-valet pull 2>/dev/null || true
 fi
-"#;
+";
 
-const POST_CHECKOUT_HOOK: &str = r#"#!/bin/sh
+const POST_CHECKOUT_HOOK: &str = r"#!/bin/sh
 # git-valet: pull valet repo after checkout
 if command -v git-valet >/dev/null 2>&1; then
     git-valet pull 2>/dev/null || true
 fi
-"#;
+";
 
 pub struct HookInstall {
     pub name: &'static str,
@@ -38,9 +40,9 @@ pub struct HookInstall {
 }
 
 const HOOKS: &[HookInstall] = &[
-    HookInstall { name: "pre-commit",    content: PRE_COMMIT_HOOK },
-    HookInstall { name: "pre-push",      content: PRE_PUSH_HOOK },
-    HookInstall { name: "post-merge",    content: POST_MERGE_HOOK },
+    HookInstall { name: "pre-commit", content: PRE_COMMIT_HOOK },
+    HookInstall { name: "pre-push", content: PRE_PUSH_HOOK },
+    HookInstall { name: "post-merge", content: POST_MERGE_HOOK },
     HookInstall { name: "post-checkout", content: POST_CHECKOUT_HOOK },
 ];
 
@@ -59,9 +61,10 @@ pub fn install(git_dir: &Path) -> Result<()> {
             if existing.contains(SHADOW_MARKER) {
                 continue; // Already installed
             }
-            // Append without duplicating the shebang
-            let stripped = hook.content.trim_start_matches("#!/bin/sh\n");
-            let combined = format!("{}\n{}", existing.trim_end(), stripped);
+            // Append without duplicating the shebang (handle both LF and CRLF)
+            let stripped =
+                hook.content.trim_start_matches("#!/bin/sh\r\n").trim_start_matches("#!/bin/sh\n");
+            let combined = format!("{}\n{stripped}", existing.trim_end());
             std::fs::write(&hook_path, combined)?;
         } else {
             std::fs::write(&hook_path, hook.content)?;
@@ -119,7 +122,7 @@ pub fn uninstall(git_dir: &Path) -> Result<()> {
             // Hook is empty after removal — delete the file
             std::fs::remove_file(&hook_path)?;
         } else {
-            std::fs::write(&hook_path, format!("{}\n", trimmed))?;
+            std::fs::write(&hook_path, format!("{trimmed}\n"))?;
         }
     }
 

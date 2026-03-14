@@ -1,102 +1,77 @@
 use std::fs;
 use tempfile::TempDir;
 
+use git_valet::hooks;
+
 #[test]
 fn hook_install_creates_files() {
     let tmp = TempDir::new().unwrap();
     let git_dir = tmp.path();
 
-    // Simule la structure .git/hooks/
+    hooks::install(git_dir).unwrap();
+
     let hooks_dir = git_dir.join("hooks");
-    fs::create_dir_all(&hooks_dir).unwrap();
-
-    // Installe les hooks (via le même mécanisme que le code)
-    let hook_names = ["pre-commit", "pre-push", "post-merge", "post-checkout"];
-    let marker = "# git-valet:";
-
-    for name in &hook_names {
+    for name in &["pre-commit", "pre-push", "post-merge", "post-checkout"] {
         let hook_path = hooks_dir.join(name);
-        let content = format!("#!/bin/sh\n{} test hook\necho test\nfi\n", marker);
-        fs::write(&hook_path, &content).unwrap();
-        assert!(hook_path.exists());
-        assert!(fs::read_to_string(&hook_path).unwrap().contains(marker));
+        assert!(hook_path.exists(), "Hook {name} should exist");
+        let content = fs::read_to_string(&hook_path).unwrap();
+        assert!(content.contains("# git-valet:"), "Hook {name} should contain marker");
     }
 }
 
 #[test]
 fn hook_append_does_not_duplicate_shebang() {
     let tmp = TempDir::new().unwrap();
-    let hook_path = tmp.path().join("pre-commit");
+    let git_dir = tmp.path();
+    let hooks_dir = git_dir.join("hooks");
+    fs::create_dir_all(&hooks_dir).unwrap();
 
-    // Hook existant
+    // Write an existing hook
     let existing = "#!/bin/sh\necho 'existing hook'\n";
-    fs::write(&hook_path, existing).unwrap();
+    fs::write(hooks_dir.join("pre-commit"), existing).unwrap();
 
-    // Simule l'append comme le fait hooks.rs (après le fix)
-    let new_hook = "#!/bin/sh\n# git-valet: sync\ngit-valet sync\nfi\n";
-    let stripped = new_hook.trim_start_matches("#!/bin/sh\n");
-    let combined = format!("{}\n{}", existing.trim_end(), stripped);
-    fs::write(&hook_path, &combined).unwrap();
+    hooks::install(git_dir).unwrap();
 
-    let result = fs::read_to_string(&hook_path).unwrap();
-
-    // Un seul shebang
-    assert_eq!(result.matches("#!/bin/sh").count(), 1);
-    // Le contenu git-valet est bien là
-    assert!(result.contains("# git-valet:"));
-    // Le hook existant est préservé
-    assert!(result.contains("existing hook"));
+    let result = fs::read_to_string(hooks_dir.join("pre-commit")).unwrap();
+    assert_eq!(result.matches("#!/bin/sh").count(), 1, "Should have only one shebang");
+    assert!(result.contains("# git-valet:"), "Should contain valet marker");
+    assert!(result.contains("existing hook"), "Should preserve existing hook");
 }
 
 #[test]
 fn hook_uninstall_removes_valet_block() {
-    let content = "#!/bin/sh\necho 'my hook'\n# git-valet: sync\nif command -v git-valet; then\n    git-valet sync\nfi\necho 'after'\n";
+    let tmp = TempDir::new().unwrap();
+    let git_dir = tmp.path();
+    let hooks_dir = git_dir.join("hooks");
+    fs::create_dir_all(&hooks_dir).unwrap();
 
-    let mut filtered = Vec::new();
-    let mut in_valet_block = false;
-    for line in content.lines() {
-        if line.contains("# git-valet:") {
-            in_valet_block = true;
-            continue;
-        }
-        if in_valet_block {
-            if line.trim() == "fi" {
-                in_valet_block = false;
-            }
-            continue;
-        }
-        filtered.push(line);
-    }
+    // Write hook with existing content + valet block
+    let content = "#!/bin/sh\necho 'my hook'\n";
+    fs::write(hooks_dir.join("pre-commit"), content).unwrap();
 
-    let result = filtered.join("\n");
-    assert!(result.contains("my hook"));
-    assert!(result.contains("after"));
-    assert!(!result.contains("git-valet"));
+    // Install then uninstall
+    hooks::install(git_dir).unwrap();
+    hooks::uninstall(git_dir).unwrap();
+
+    let result = fs::read_to_string(hooks_dir.join("pre-commit")).unwrap();
+    assert!(result.contains("my hook"), "Should preserve existing hook");
+    assert!(!result.contains("git-valet"), "Should remove valet block");
 }
 
 #[test]
-fn hook_uninstall_empty_after_removal() {
-    let content = "#!/bin/sh\n# git-valet: sync\nif command -v git-valet; then\n    git-valet sync\nfi\n";
+fn hook_uninstall_deletes_empty_hooks() {
+    let tmp = TempDir::new().unwrap();
+    let git_dir = tmp.path();
 
-    let mut filtered = Vec::new();
-    let mut in_valet_block = false;
-    for line in content.lines() {
-        if line.contains("# git-valet:") {
-            in_valet_block = true;
-            continue;
-        }
-        if in_valet_block {
-            if line.trim() == "fi" {
-                in_valet_block = false;
-            }
-            continue;
-        }
-        filtered.push(line);
+    // Install then uninstall (no pre-existing content)
+    hooks::install(git_dir).unwrap();
+    hooks::uninstall(git_dir).unwrap();
+
+    let hooks_dir = git_dir.join("hooks");
+    for name in &["pre-commit", "pre-push", "post-merge", "post-checkout"] {
+        assert!(
+            !hooks_dir.join(name).exists(),
+            "Hook {name} should be deleted when empty after removal"
+        );
     }
-
-    let result = filtered.join("\n");
-    let trimmed = result.trim();
-
-    // Après suppression du bloc git-valet, il ne reste que le shebang
-    assert!(trimmed == "#!/bin/sh");
 }

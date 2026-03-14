@@ -113,9 +113,11 @@ git valet deinit          # remove git-valet from this project
 git clone git@github.com:you/my-project.git
 cd my-project
 
-# 2. Re-initialize git-valet for this project
-git valet init git@github.com:you/my-project-private.git .env config/local.toml notes/
+# 2. Re-initialize git-valet (no files needed — pulls from remote automatically)
+git valet init git@github.com:you/my-project-private.git
 ```
+
+> **Note:** When no files are specified, `git valet init` fetches the existing `.gitvalet` and tracked files from the remote. Only pass files on first-time setup.
 
 ## Architecture
 

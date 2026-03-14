@@ -1,14 +1,15 @@
-mod config;
-mod git_helpers;
-mod hooks;
-mod valet;
+use std::process::ExitCode;
 
-use anyhow::Result;
-use clap::{Parser, Subcommand};
+use clap::{CommandFactory, Parser, Subcommand};
+use clap_complete::Shell;
+use colored::Colorize;
+
+use git_valet::valet;
 
 #[derive(Parser)]
 #[command(
     name = "git-valet",
+    version,
     about = "Transparently version private files in a separate private repo, synced via git hooks",
     long_about = "git-valet — transparently version private files (.env, secrets, notes, AI prompts)\nin a separate private repo, synced via git hooks. Zero workflow change."
 )]
@@ -38,39 +39,48 @@ enum Commands {
     /// Pull the valet repo
     Pull,
     /// Add files to the valet repo
-    Add {
-        files: Vec<String>,
-    },
+    Add { files: Vec<String> },
     /// Remove git-valet from this project (hooks + config)
     Deinit,
+    /// Generate shell completions
+    Completions {
+        /// Shell to generate completions for
+        shell: Shell,
+    },
 }
 
-fn main() -> Result<()> {
-    let cli = Cli::parse();
-
-    match cli.command {
-        Commands::Init { remote, files } => {
-            valet::init(&remote, &files)?;
-        }
-        Commands::Status => {
-            valet::status()?;
-        }
-        Commands::Sync { message } => {
-            valet::sync(&message)?;
-        }
-        Commands::Push => {
-            valet::push()?;
-        }
-        Commands::Pull => {
-            valet::pull()?;
-        }
-        Commands::Add { files } => {
-            valet::add_files(&files)?;
-        }
-        Commands::Deinit => {
-            valet::deinit()?;
-        }
+fn main() -> ExitCode {
+    // Respect NO_COLOR (https://no-color.org/)
+    if std::env::var_os("NO_COLOR").is_some() {
+        colored::control::set_override(false);
     }
 
-    Ok(())
+    let cli = Cli::parse();
+
+    let result = match cli.command {
+        Commands::Init { remote, files } => valet::init(&remote, &files),
+        Commands::Status => valet::status(),
+        Commands::Sync { message } => valet::sync(&message),
+        Commands::Push => valet::push(),
+        Commands::Pull => valet::pull(),
+        Commands::Add { files } => valet::add_files(&files),
+        Commands::Deinit => valet::deinit(),
+        Commands::Completions { shell } => {
+            clap_complete::generate(
+                shell,
+                &mut Cli::command(),
+                "git-valet",
+                &mut std::io::stdout(),
+            );
+            Ok(())
+        }
+    };
+
+    match result {
+        Ok(()) => ExitCode::SUCCESS,
+        Err(err) => {
+            eprintln!("{} {err:#}", "error:".red().bold());
+            ExitCode::FAILURE
+        }
+    }
 }
