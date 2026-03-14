@@ -23,7 +23,7 @@ enum Commands {
     Init {
         /// Remote of the valet repo (e.g. git@github.com:user/project-private.git)
         remote: String,
-        /// Files/directories to track in the valet repo
+        /// Files/directories to track (optional — omit on fresh clone to read from .gitvalet)
         files: Vec<String>,
     },
     /// Show the valet repo status
@@ -50,9 +50,6 @@ fn main() -> Result<()> {
 
     match cli.command {
         Commands::Init { remote, files } => {
-            if files.is_empty() {
-                anyhow::bail!("Specify at least one file to track. Example: git valet init <remote> .env notes/");
-            }
             valet::init(&remote, &files)?;
         }
         Commands::Status => {
